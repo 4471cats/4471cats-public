@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cat Breed Detection</title>
+</head>
+<body>
+    <h1>🐱 Cat Breed Detection</h1>
+    
+    <div id="status">Disconnected</div>
+    
+    <div>
+        <label>
+            Server URL:
+            <input type="text" id="serverUrl" value="ws://localhost:8000/api/ws/stream">
+        </label>
+        <label>
+            Confidence:
+            <input type="range" id="confidence" min="0" max="100" value="25">
+            <span id="confValue">0.25</span>
+        </label>
+    </div>
+    
+    <div>
+        <button id="startBtn" onclick="startCamera()">📹 Start Camera</button>
+        <button id="uploadBtn" onclick="document.getElementById('videoFile').click()">📁 Upload Video</button>
+        <button id="stopBtn" onclick="stopStream()" disabled>⏹ Stop</button>
+        <input type="file" id="videoFile" accept="video/*" hidden>
+    </div>
+    
+    <div style="display: flex; flex-direction: row;">
+        <div>
+            <h3>Source</h3>
+            <video id="localVideo" autoplay playsinline width="480" height="360"></video>
+        </div>
+        <div>
+            <h3>Detection Result</h3>
+            <canvas id="resultCanvas" width="480" height="360"></canvas>
+        </div>
+    </div>
+    
+    <div>
+        <span>FPS: <strong id="fps">0</strong></span>
+        <span>Latency: <strong id="latency">0</strong> ms</span>
+        <span>Detections: <strong id="detCount">0</strong></span>
+    </div>
+    
+    <div>
+        <h3>Latest Detections</h3>
+        <div id="detectionList"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        let videoStream = null;
+        let sendInterval = null;
+        let frameCount = 0;
+        let lastFpsTime = Date.now();
+        let isVideoFile = false;
+        
+        const video = document.getElementById('localVideo');
+        const canvas = document.getElementById('resultCanvas');
+        const ctx = canvas.getContext('2d');
+        const captureCanvas = document.createElement('canvas');
+        const captureCtx = captureCanvas.getContext('2d');
+        
+        document.getElementById('confidence').addEventListener('input', (e) => {
+            const val = (e.target.value / 100).toFixed(2);
+            document.getElementById('confValue').textContent = val;
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ conf: parseFloat(val) }));
+            }
+        });
+        
+        document.getElementById('videoFile').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                startVideoFile(file);
+            }
+        });
+        
+        function updateStatus(message) {
+            document.getElementById('status').textContent = message;
+        }
+        
+        async function startCamera() {
+            try {
+                isVideoFile = false;
+                videoStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 480 }
+                });
+                video.srcObject = videoStream;
+                video.loop = false;
+                
+                await new Promise(resolve => video.onloadedmetadata = resolve);
+                
+                connectAndStream();
+            } catch (error) {
+                console.error('Error starting camera:', error);
+                updateStatus('Error: ' + error.message);
+            }
+        }
+        
+        async function startVideoFile(file) {
+            try {
+                isVideoFile = true;
+                
+                if (videoStream) {
+                    videoStream.getTracks().forEach(track => track.stop());
+                    videoStream = null;
+                }
+                
+                video.srcObject = null;
+                video.src = URL.createObjectURL(file);
+                video.loop = true;
+                
+                await new Promise(resolve => video.onloadedmetadata = resolve);
+                video.play();
+                
+                connectAndStream();
+            } catch (error) {
+                console.error('Error loading video:', error);
+                updateStatus('Error: ' + error.message);
+            }
+        }
+        
+        async function connectAndStream() {
+            // Set capture canvas to video dimensions
+            captureCanvas.width = video.videoWidth;
+            captureCanvas.height = video.videoHeight;
+            
+            const url = document.getElementById('serverUrl').value;
+            updateStatus('Connecting...');
+            
+            ws = new WebSocket(url);
+            
+            ws.onopen = () => {
+                updateStatus('Connected');
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('uploadBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+                
+                const conf = document.getElementById('confidence').value / 100;
+                ws.send(JSON.stringify({ conf }));
+                
+                sendInterval = setInterval(sendFrame, 100);
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                if (data.status === 'config_updated') {
+                    console.log('Config updated:', data);
+                    return;
+                }
+                
+                if (data.error) {
+                    console.error('Server error:', data.error);
+                    return;
+                }
+                
+                document.getElementById('latency').textContent = data.frame_time_ms || 0;
+                document.getElementById('detCount').textContent = data.count || 0;
+                
+                frameCount++;
+                const now = Date.now();
+                if (now - lastFpsTime >= 1000) {
+                    document.getElementById('fps').textContent = frameCount;
+                    frameCount = 0;
+                    lastFpsTime = now;
+                }
+                
+                drawDetections(data.detections || []);
+                updateDetectionList(data.detections || []);
+            };
+            
+            ws.onclose = () => {
+                updateStatus('Disconnected');
+                stopStream();
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                updateStatus('Connection error');
+            };
+        }
+        
+        let lastDetections = [];
+        
+        function sendFrame() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            if (video.paused || video.ended) return;
+            
+            captureCtx.drawImage(video, 0, 0);
+            
+            const dataUrl = captureCanvas.toDataURL('image/jpeg', 0.8);
+            const base64 = dataUrl.split(',')[1];
+            ws.send(base64);
+            
+            // Draw current frame with last known detections
+            drawDetections(lastDetections);
+        }
+        
+        function drawDetections(detections) {
+            lastDetections = detections;
+            
+            // Scale factors from video to canvas
+            const scaleX = canvas.width / video.videoWidth;
+            const scaleY = canvas.height / video.videoHeight;
+            
+            // Draw the current video frame
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // Draw bounding boxes
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 2;
+            ctx.font = '14px sans-serif';
+            
+            for (const det of detections) {
+                const [x1, y1, x2, y2] = det.bbox;
+                const sx1 = x1 * scaleX;
+                const sy1 = y1 * scaleY;
+                const sw = (x2 - x1) * scaleX;
+                const sh = (y2 - y1) * scaleY;
+                
+                // Draw box
+                ctx.strokeRect(sx1, sy1, sw, sh);
+                
+                // Draw label background
+                const label = `${det.class} ${(det.confidence * 100).toFixed(0)}%`;
+                const textWidth = ctx.measureText(label).width;
+                ctx.fillStyle = '#00ff00';
+                ctx.fillRect(sx1, sy1 - 18, textWidth + 4, 18);
+                
+                // Draw label text
+                ctx.fillStyle = '#000000';
+                ctx.fillText(label, sx1 + 2, sy1 - 4);
+            }
+        }
+        
+        function stopStream() {
+            if (sendInterval) {
+                clearInterval(sendInterval);
+                sendInterval = null;
+            }
+            
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+            
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+                videoStream = null;
+            }
+            
+            if (isVideoFile) {
+                video.pause();
+                video.src = '';
+            }
+            
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('uploadBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            document.getElementById('videoFile').value = '';
+            updateStatus('Disconnected');
+        }
+        
+        function updateDetectionList(detections) {
+            const list = document.getElementById('detectionList');
+            
+            if (detections.length === 0) {
+                list.innerHTML = '<p>No cats detected</p>';
+                return;
+            }
+            
+            list.innerHTML = detections.map(d => `
+                <div>
+                    <span>🐱 ${d.class}</span>
+                    <span>${(d.confidence * 100).toFixed(1)}%</span>
+                </div>
+            `).join('');
+        }
+    </script>
+</body>
+</html>
