@@ -1,6 +1,16 @@
 # 4471cats - YOLOv11 Cat Breed Detection
 
-This project trains a YOLOv8 model to detect and classify 12 different cat breeds from the Oxford-IIIT Pet Dataset.
+This project trains a YOLOv11 model to detect and classify 12 different cat breeds from the Oxford-IIIT Pet Dataset.
+
+## Relevant Links
+
+- [Train Notebook](https://www.kaggle.com/code/inogai/4471-ablation-train)
+- [Eval - No Fine Tune](https://www.kaggle.com/code/inogai/4471-ablation-train-no-fine-tune)
+- [Test](https://www.kaggle.com/code/inogai/4471-test)
+- [Weights Publication](https://www.kaggle.com/datasets/inogai/4471-weights/code)
+- [Train Dataset](https://www.kaggle.com/datasets/inogai/of3t-cats-yolo)
+- [Test Dataset](https://www.kaggle.com/datasets/inogai/4471-cats-wiki-images)
+
 
 ## Setup
 
